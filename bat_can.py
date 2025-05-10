@@ -13,15 +13,13 @@ import numpy as np
 import os
 from shutil import copy2
 import timeit
-
 from bat_can_init import initialize
 
 # This is the main function that runs the model.  We define it this way so it
 # is called by "main," below:
-def bat_can(input, cores):
+def bat_can(input, cores, driver = None, output_dir = None):
     # Record the start time:
     start = timeit.default_timer()
-
     if input is None:
         # Default is a single-particle model of graphite/LCO
         input = 'spmGraphite_PorousSep_spmLCO_input'
@@ -35,6 +33,8 @@ def bat_can(input, cores):
 
     if not cores:
         cores = 1
+    if not driver:
+        driver = False
     #===========================================================================
     #   READ IN USER INPUTS
     #===========================================================================
@@ -104,7 +104,6 @@ def bat_can(input, cores):
                 'first-step': 'discharge', 'equilibrate':
                 {'enable': True, 'time':  t_span}, 'phi-cutoff-lower': 2.0,
                 'phi-cutoff-upper': 4.8, 'init':True}
-
             solution = model.run(SV_0, an, sep, ca, algvars, parameters, sim)
 
             # Save final state as the initial state for all subsequent
@@ -125,8 +124,12 @@ def bat_can(input, cores):
         # Run the simulation
         solution = model.run(SV_0, an, sep, ca, algvars, parameters, sim)
 
-        # Call any output routines related to the simulation type:
-        model.output(solution, an, sep, ca, parameters, sim)
+        if not driver:
+            # Call any output routines related to the simulation type:
+            model.output(solution, an, sep, ca, parameters, sim)
+        else:
+            # Save to user-specified directory
+            model.output(solution, an, sep, ca, parameters, sim, output_dir=output_dir)
 
         SV_init = model.initial_state(solution)
         return SV_init
@@ -149,21 +152,35 @@ def bat_can(input, cores):
     else:
         filename = (parameters['output'] +'/')
 
-    if not os.path.exists(filename):
-        os.makedirs(filename)
+    # Save the yaml file
+    if not driver:
+        if not os.path.exists(filename):
+            os.makedirs(filename)
 
-    copy2(input_file, filename)
+        copy2(input_file, filename)
+
+    # Save the yaml file to user-specified output directory
+    else:
+        filename = output_dir + '/output' + parameters['simulations'][0]['outputs']['save-name'] + '.yaml'
+        copy2(input_file, filename)
 
     # Record time when finished:
     stop = timeit.default_timer()
     print('Time: ', stop - start)
 
-    print('\nPlotting...')
+    # Plotting
+    if not driver:
+        print('\nPlotting...')
+  
+    if not driver:
+        for sim in parameters['simulations']:
+            model = importlib.import_module('.'+sim['type'], package='simulations')
 
-    for sim in parameters['simulations']:
-        model = importlib.import_module('.'+sim['type'], package='simulations')
-
-        solution = model.plot(an, sep, ca, parameters, sim)
+            solution = model.plot(an, sep, ca, parameters, sim)
+    # Skip plotting for driver
+    else:
+        for sim in parameters['simulations']:
+            model = importlib.import_module('.'+sim['type'], package='simulations')
 
 #===========================================================================
 #   FUNCTIONALITY TO RUN FROM THE COMMAND LINE

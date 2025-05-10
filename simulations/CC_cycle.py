@@ -23,8 +23,6 @@ def run(SV_0, an, sep, ca, algvars, params, sim):
     """
     Run the simulation
     """
-    # Determine the current to run at, and the time to fully charge/discharge.
-    # 'calc_current' is defined below.
     current, t_final = calc_current(sim, an, ca)
 
     # Store the location of all algebraic variables.
@@ -70,9 +68,7 @@ def run(SV_0, an, sep, ca, algvars, params, sim):
             'algebraic_vars_idx':algvars, 'first_step_size':1e-12,
             'rootfn':terminate_check, 'nr_rootfns':n_roots, 'compute_initcond':'yp0', 'max_steps':10000, 
             'linsolver':'band', 'lband':lband, 'uband':uband}
-
     solver = dae('ida', residual, **options)
-
     # Go through the current steps and integrate for each current:
     for i, step in enumerate(steps):
         print('Step ',int(i+1),'(out of', str(n_steps)+'): ',step,'...\n')
@@ -122,10 +118,7 @@ def calc_current(params, an, ca):
     i_ext is given, convert the units to A/m2.
     """
 
-    # Battery capacity is the lesser of the anode and cathode capacities. It is
-    # required for determining the simulation time.
     cap = min(an.capacity, ca.capacity)
-
     if params['i_ext'] is not None: # User specified a current density.
         # User cannot set both i_ext and C-rate. Throw an error, if they have:
         if params['C-rate'] is not None:
@@ -150,8 +143,7 @@ def calc_current(params, an, ca):
                 i_ext *= 10000
 
     elif params['C-rate'] is not None: # User specified a C-rate, but not i_ext:
-        i_ext = cap*params['C-rate']
-
+        i_ext = cap * params['C-rate']
     else:
         # If neither i_ext or C_rate is provided, throw an error:
         raise ValueError("Please specify either the external current (i_ext) "
@@ -225,13 +217,11 @@ def residual(t, SV, SVdot, resid, inputs):
     # Call residual functions for anode, separator, and cathode. Assemble them
     # into a single residual vector 'resid':
     resid[an.SVptr['electrode']] = an.residual(t, SV, SVdot, sep, ca, params)
-
     resid[sep.SVptr['sep']] = sep.residual(SV, SVdot, an, ca, params)
-
     resid[ca.SVptr['electrode']] = ca.residual(t, SV, SVdot, sep, an, params)
 
 def output(solution, an, sep, ca, params, sim, plot_flag=True,
-    return_flag=False, save_flag=True):
+    return_flag=False, save_flag=True, output_dir=None):
     """
     Prepare and save any output data to the correct location. Prepare,
     create, and save any figures relevant to constant-current cycling.
@@ -240,7 +230,6 @@ def output(solution, an, sep, ca, params, sim, plot_flag=True,
     # import matplotlib.pyplot as plt
     import os
     import pandas as pd
-
     # Create figure:
     lp = 30 #labelpad
     # Number of subplots
@@ -272,12 +261,16 @@ def output(solution, an, sep, ca, params, sim, plot_flag=True,
             # plt.show()
         else:
             if 'save-name' in sim['outputs']:
-                if len(params['simulations']) == 1:
-                    sim['filename'] = (params['output'] +'_'
-                        + sim['outputs']['save-name'] )
+                # If we specify output dir for driver
+                if output_dir is not None:
+                    sim['filename'] = output_dir
                 else:
-                    sim['filename'] = (params['output'] +'/'
-                        + sim['outputs']['save-name'] )
+                    if len(params['simulations']) == 1:
+                        sim['filename'] = (params['output'] +'_'
+                            + sim['outputs']['save-name'] )
+                    else:
+                        sim['filename'] = (params['output'] +'/'
+                            + sim['outputs']['save-name'] )
 
                 if not os.path.exists(sim['filename']):
                     os.makedirs( sim['filename'])
@@ -306,7 +299,6 @@ def plot(an, sep, ca, params, sim):
     # Number of subplots
     # (this simulation produces 2: current and voltage, vs. time):
     n_plots = 2 + an.n_plots + ca.n_plots + sep.n_plots
-
     # There are 4 variables stored before the state variables: (1) time (s),
     # (2) cycle number, (3) current density(A/cm2) , and (4) Capacity (mAh/cm2)
     SV_offset = 4
@@ -369,7 +361,6 @@ def plot(an, sep, ca, params, sim):
                 gridspec_kw = {'wspace':0, 'hspace':0})
 
         cycle_fig.set_size_inches((4.0,2.0))
-
         # iterate over cycles:        
         for i in range(int(solution[1,-1])):
             cycle = solution_df[solution_df.iloc[:,0] == i+1]

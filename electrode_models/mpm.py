@@ -50,45 +50,70 @@ class electrode():
         self.dyInv = 1/self.dy
         self.n_points = 1. # No internal discretization
 
-        # Radial discretization:    
-        self.n_r = inputs['n_radii']   # Number of discretized radial "shells"
+        # Radial discretization:
 
         # Calculate properties related to the radial discretization.
 
-        # For both models, r_int_j is proportional to total particle radius
-        self.r_int = np.ones(self.n_r+1) * inputs['r_p']
-        # radius at particle center equals zero
-        self.r_int[0] = 0.
+        # Particle radii vector
+        self.r_p = np.array(inputs['r_p'])  
+        print(self.r_p)
+        print(inputs['r_p'])
 
-        # array of radial indices:
-        ind_r = np.arange(self.n_r+1)
+        # initialize r_int
+        self.r_int = []
 
-        if inputs['radial-method'] == 'equal_r':
-            # If the radius is discretized evenly, the radius of shell j, 
+
+        # Discretize each particle so that each radial shell has equal thickness (delta_r)
+        if inputs['radial-method'] == 'delta_r':
+
+            # self.n_r = np.round(inputs['delta_r']/ self.r_p).astype(int)
+            self.n_r = np.round(self.r_p/inputs['delta_r']).astype(int)
+            self.n_r = self.n_r[0]
+            for i in range(len(self.r_p)):        
+                # generate the radial shells
+                r_int_i = np.linspace(0, self.r_p[i], self.n_r + 1)
+                self.r_int.append(r_int_i)
+
+            # convert r_int to a numpy array
+            self.r_int = np.array(self.r_int)
+
+
+        elif inputs['radial-method'] == 'equal_r':
+            #   If the radius is discretized evenly, the radius of shell j, 
             #   r_j, relative to the total radius r_particle, is:
-            #   r_j = r_particle * j / n_r
-            self.r_int *= ind_r/ self.n_r
+            #   r_j = r_particle * j /n_r
+            raise ValueError("equal_r not supported for this model, please use delta_r.")
 
         elif inputs['radial-method'] == 'equal_v':
             # Radius r_j**3 = (j/n_r)*r_particle**3
-            self.r_int *= (ind_r / self.n_r)**(1./3.)
+            raise ValueError("equal_v not supported for this model, please use delta_r.")
 
         elif self.n_r == 1:
             pass
 
         else:
-            raise ValueError("Please choose an available radial discretization method: 'radial-method' = equal_r or equal_v.")
+            raise ValueError("Please choose an available radial discretization method: 'radial-method' = delta_r.")
 
 
-        # Diffusion fluxes are scaled by 3/(r_i^3 - r_(i-1)^3):
-        self.diff_vol_mult = (3 * np.ones(self.n_r)
-             / ((self.r_int[1:])**3 - self.r_int[:-1]**3))
+        # Scale diffusion fluxes by 3/(r_i^3 - r_(i-1)^3)
+        self.diff_vol_mult = []
+        for i in range(len(self.r_int)):
+            r_i = self.r_int[i]
+            diff_vol_mult_i = 3 / (r_i[1:]**3 - r_i[:-1]**3)
+            self.diff_vol_mult.append(diff_vol_mult_i)
+        # stored in an array
+        self.diff_vol_mult = np.array(self.diff_vol_mult)
+        self.dr = []
+        for i in range(len(self.r_int)):
+            temp = np.diff(self.r_int[i]).reshape(len(self.r_int[i])-1,1)
+            self.dr.append(temp)
 
         # Radial distance between center of each volume:
-        self.dr = np.diff(self.r_int).reshape((len(self.r_int)-1,1))
-        # self.dr.shape
-        # Radius at center of each volume:
-        self.r_center = 0.5*(self.r_int[:-1] + self.r_int[1:])
+        self.r_center = []
+        for i in range(len(self.r_int)):
+            i_center = 0.5*(self.r_int[i][:-1] + self.r_int[i][1:])
+            self.r_center.append(i_center)
+
         # Import and process diffusion coefficients:
         self.D_k = np.zeros_like(self.bulk_obj.X)
         for item in inputs['diffusion-coefficients']:
@@ -101,13 +126,15 @@ class electrode():
 
         # Phase volume fractions
         self.eps_solid = inputs['eps_solid']
-        self.eps_elyte = 1 - self.eps_solid
+        self.eps_elyte = 1 - sum(self.eps_solid)
 
         # Electrode-electrolyte interface area, per unit geometric area.
         # This calculation assumes spherical particles of a single radius, with 
         # no overlap.
-        self.A_surf_ratio = (3*self.eps_solid*self.dy/inputs['r_p'])
-        print("surface area", self.A_surf_ratio)
+        self.A_surf_ratio = []
+        for i in range(len(self.r_p)):
+            i_surf_ratio = 3*self.eps_solid[i]*self.dy/self.r_p[i]
+            self.A_surf_ratio.append(i_surf_ratio)
         # Inverse double layer capacitance, per unit interfacial area.
         self.C_dl_Inv = 1/inputs['C_dl']
 
@@ -118,8 +145,7 @@ class electrode():
         # SV_offset specifies the index of the first SV variable for the 
         # electode (zero for anode, n_vars_anode + n_vars_sep for the cathode)
         self.SV_offset = offset
-
-        # Determine the electrode capacity (Ah/m2)
+    
 
         # Max concentration of stored ion (intercalated Li)
         # Save initial X
@@ -128,19 +154,20 @@ class electrode():
         self.bulk_obj.X = inputs['stored-ion']['name']+':1.0' 
         # Concentration of stored Li, per unit volume of intercalation phase:
         Conc = self.bulk_obj[inputs['stored-ion']['name']].concentrations[0]
+
         
-        self.capacity = (Conc*inputs['stored-ion']['charge']*ct.faraday
-                *inputs['eps_solid'])*inputs['thickness']/3600
-        print('s', self.capacity)
-        print(type(self.capacity))
+        self.capacity = 0
+        for i in range(len(self.r_p)):
+            self.capacity  += ((Conc*inputs['stored-ion']['charge']*ct.faraday
+                *self.eps_solid[i])*inputs['thickness']/3600)
         # Return Cantera object composition to original value:
         self.bulk_obj.X = X_o
+        
         # Number of state variables: electrode potential, electrolyte 
         # potential, electrode composition (n_species), electrolyte composition 
         # (n_species)
-        self.n_vars = (2 + self.bulk_obj.n_species * self.n_r 
+        self.n_vars = (2 + self.bulk_obj.n_species * self.n_r
             + self.elyte_obj.n_species)
-
         # This model produces one plot, for the intercalation concentration.
         self.n_plots = 1
 
@@ -160,11 +187,17 @@ class electrode():
         self.SVptr = {}
         self.SVptr['phi_ed'] = np.array([0])
         self.SVptr['phi_dl'] = np.array([1])
-        self.SVptr['C_k_ed'] = np.empty((self.n_r, self.bulk_obj.n_species), 
-            dtype=int)
-        for j in np.arange(self.n_r):
-            self.SVptr['C_k_ed'][j,:] = np.arange(2 + j*self.bulk_obj.n_species,
-                2 + (j+1)*self.bulk_obj.n_species, dtype=int)
+        #sv dict:dict
+    
+        self.SVptr['C_k_ed'] = []
+        for i in range(len(self.r_p)):
+            self.SVptr['C_k_ed'].append(np.empty((self.n_r, self.bulk_obj.n_species), dtype=int))
+       
+        for i in range(len(self.r_p)):
+            for j in range(self.n_r):
+                self.SVptr['C_k_ed'][i][j,:] = np.arange(2 + j*self.bulk_obj.n_species, 
+                    2 + (j+1)*self.bulk_obj.n_species, dtype=int)
+            
             
         self.SVptr['C_k_elyte'] = np.arange(
             2 + self.n_r*self.bulk_obj.n_species, 
@@ -174,6 +207,8 @@ class electrode():
         # ['C_k_elyte'][j] accesses the pointer array:
         self.SVptr['C_k_elyte'].shape = (1,self.elyte_obj.n_species)
 
+
+        #sum here as well times bulk
         self.SVnames = (['phi_ed', 'phi_dl'] 
             + self.n_r*self.bulk_obj.species_names[:] 
             + self.elyte_obj.species_names[:])
@@ -184,6 +219,8 @@ class electrode():
 
         # Save the indices of any algebraic variables:
         self.algvars = offset + self.SVptr['phi_ed'][:]
+        
+        
 
     def initialize(self, inputs, sep_inputs):
 
@@ -193,12 +230,14 @@ class electrode():
         # Load intial state variables:
         SV[self.SVptr['phi_ed']] = inputs['phi_0']
         SV[self.SVptr['phi_dl']] = sep_inputs['phi_0'] - inputs['phi_0']
-        for j in np.arange(self.n_r):
-            SV[self.SVptr['C_k_ed'][j,:]] = self.bulk_obj.concentrations
+
+        for i in range(len(self.r_p)):
+            for j in np.arange(self.n_r):
+                SV[self.SVptr['C_k_ed'][i][j,:]] = self.bulk_obj.concentrations
 
         SV[self.SVptr['C_k_elyte']] = self.elyte_obj.concentrations
         return SV
-
+        
     def residual(self, t, SV, SVdot, sep, counter, params):
         """
         Define the residual for the state of the single particle electrode.
@@ -227,11 +266,10 @@ class electrode():
             - counter: the object representing the electrode counter to the current electrode
             - params: dict of battery simulation parameters.
         """
-        
         # Initialize the residual:
         resid = np.zeros((self.n_vars,))
 
-        # Save  copies of the solution vectors, pointers for this electrode:
+        # Save local copies of the solution vectors, pointers for this electrode:
         SVptr = self.SVptr
         SV_loc = SV[SVptr['electrode']]
         SVdot_loc = SVdot[SVptr['electrode']]
@@ -239,34 +277,69 @@ class electrode():
         # Read the electrode and electrolyte electric potential:
         phi_ed = SV_loc[SVptr['phi_ed']]
         phi_elyte = phi_ed + SV_loc[SVptr['phi_dl']]
-
         # Read out electrode bulk composition; set the Cantra object:
-        C_k_ed = SV_loc[SVptr['C_k_ed']] # Molar density (kmol/m3 of phase)
-        # Mole fraction at particle/elyte interface:
-        X_k_ed_int = C_k_ed[-1,:]/sum(C_k_ed[-1, :]) 
-        self.bulk_obj.X = X_k_ed_int
-
-        # Set electric potentials for Cantera objects:
-        self.bulk_obj.electric_potential = phi_ed
-        self.conductor_obj.electric_potential = phi_ed
-        self.elyte_obj.electric_potential = phi_elyte
-
-        #TODO #38
-        
-        # Faradaic current density is positive when electrons are consumed 
-        # (Li transferred to the electrode)
-        i_Far = -(ct.faraday 
-            * self.surf_obj.get_net_production_rates(self.conductor_obj))
-        
-        # Calculate the electrolyte species fluxes and associated ionic current 
-        # at the boundary with the separator:
         N_k_sep, i_io = sep.electrode_boundary_flux(SV, self, params['T'])
+        sdot_surf=0
+        i_Far = 0
+        for i in range(len(self.r_p)):
+            # Calculate the electrolyte species fluxes and associated ionic current 
+            # at the boundary with the separator:
+            #save dr so we can redefine self.dr every time its passed to N_r
+
+            #initialize particle concentration dt array
+            C_k_ed = SV_loc[SVptr['C_k_ed'][i]]
+            X_k_ed_int = C_k_ed[-1,:]/sum(C_k_ed[-1,:])
+            self.bulk_obj.X = X_k_ed_int
+            self.bulk_obj.electric_potential = phi_ed
+            self.conductor_obj.electric_potential = phi_ed
+            self.elyte_obj.electric_potential = phi_elyte
+
+            # faradic current for each particle
+            # Faradaic current density is positive when electrons are consumed 
+            # (Li transferred to the electrode)
+            i_Far += -(ct.faraday * self.surf_obj.get_net_production_rates(self.conductor_obj)) * self.A_surf_ratio[i]
+
+            # species production in electrode active material:
+            sdot_k_ed = self.surf_obj.get_net_production_rates(self.bulk_obj)
+
+            # Calculate radial fluxes (found in submodules/transport.py)
+            N_r = radial_flux(C_k_ed, sdot_k_ed, self, i)
+            
+            """Calculate the change in X_Li in the particle interior"""
+            # Flux in minus flux out, weighted by interfacial surface area (r^2)
+            flux_diff = N_r[:-1].T * self.r_int[i][:-1]**2 - N_r[1:].T * self.r_int[i][1:]**2
+            # Divide by the differential volume of the "shell" 
+            #   i.e. multiply by 3/(r_i^3 - r_(i-1)^3):
+            # Calculate the time derivative of concentration for each species and shell
+            dCK_ed_dt = flux_diff * self.diff_vol_mult[i]
+            for j in np.arange(self.n_r):
+                resid[SVptr['C_k_ed'][i][j, :]] = SVdot_loc[SVptr['C_k_ed'][i][j, :]] - dCK_ed_dt.T[j, :]
+                    # Molar production rate of electrode species (kmol/m2/s)
+            sdot_elyte = self.surf_obj.get_net_production_rates(self.elyte_obj)
+            # Change in electrolyte species concentration per unit time:
+            sdot_surf += sdot_elyte * self.A_surf_ratio[i]
+
+        # Double layer current has the same sign as i_Far, and is based on 
+        # charge balance in the electrolyte phase:
+        i_dl = (self.i_ext_flag*i_io - i_Far)/sum(self.A_surf_ratio)
+        self.index_Li_elyte -= (i_dl / ct.faraday) * sum(self.A_surf_ratio)
+        # sdot_surf[self.index_Li_elyte] -= (i_dl / ct.faraday) * sum(self.A_surf_ratio)
+
+
+        # Differential equation for the double layer potential:
+        resid[SVptr['phi_dl']] = SVdot_loc[SVptr['phi_dl']] - i_dl * self.C_dl_Inv
+
+        dCk_elyte_dt = \
+        ((sdot_surf + self.i_ext_flag * N_k_sep)
+        * self.dyInv / self.eps_elyte)
+        resid[SVptr['C_k_elyte']] = SVdot_loc[SVptr['C_k_elyte']] - dCk_elyte_dt
+        
         if self.name=='anode':
             # The electric potential of the anode = 0 V.
             resid[[SVptr['phi_ed'][0]]] = SV_loc[SVptr['phi_ed'][0]]
-            
+
         elif self.name=='cathode':
-            # For the cathode, the potential of the cathode must be such that 
+             # For the cathode, the potential of the cathode must be such that 
             # the electrolyte electric potential (calculated as phi_ca + 
             # dphi_dl) produces the correct ionic current between the separator # and cathode:
             if params['boundary'] == 'current':
@@ -274,52 +347,10 @@ class electrode():
             elif params['boundary'] == 'potential':   
                 # Potential at time t:
                 phi = np.interp(t, params['times'], params['potentials'])
-                   
+
                 # Cell potential must equal phi:
                 resid[SVptr['phi_ed']] = SV_loc[SVptr['phi_ed']] - phi
 
-        # Double layer current has the same sign as i_Far, and is based on 
-        # charge balance in the electrolyte phase:
-        i_dl = self.i_ext_flag*i_io/self.A_surf_ratio - i_Far
-
-        # Differential equation for the double layer potential:
-        resid[SVptr['phi_dl']] = \
-            SVdot_loc[SVptr['phi_dl']] - i_dl*self.C_dl_Inv
-
-        # species production in electrode active material:
-        sdot_k_ed = self.surf_obj.get_net_production_rates(self.bulk_obj)
-
-        # Calculate radial fluxes (found in submodules/transport.py)
-        N_r = radial_flux(C_k_ed, sdot_k_ed, self)
-        with open('spmsdot', 'a') as file:  # Open in append mode
-                file.write(f"{sdot_k_ed} ")  # Append data with a newline
-
-        """Calculate the change in X_Li in the particle interior"""
-        # Flux in minus flux out, weighted by interfacial surface area (r^2)
-        flux_diff = N_r[:-1].T*self.r_int[:-1]**2 - N_r[1:].T*self.r_int[1:]**2
-        
-        # Divide by the differential volume of the "shell" 
-        #   i.e. multiply by 3/(r_i^3 - r_(i-1)^3):
-        dCk_ed_dt = flux_diff * self.diff_vol_mult
-
-        # Calculate residuals:
-        for j in np.arange(self.n_r):
-            resid[SVptr['C_k_ed'][j,:]] = (SVdot_loc[SVptr['C_k_ed'][j,:]] 
-                - dCk_ed_dt.T[j,:])
-
-        # Molar production rate of electrode species (kmol/m2/s).
-        sdot_elyte = self.surf_obj.get_net_production_rates(self.elyte_obj)
-        
-        # Double layer current removes Li from the electrolyte.  Subtract this 
-        # from sdot_electrolyte:
-        sdot_elyte[self.index_Li_elyte] -= i_dl / ct.faraday
-            
-        # Change in electrolyte species concentration per unit time:
-        dCk_elyte_dt = \
-            ((sdot_elyte * self.A_surf_ratio + self.i_ext_flag * N_k_sep)
-            * self.dyInv / self.eps_elyte)
-        resid[SVptr['C_k_elyte']] = SVdot_loc[SVptr['C_k_elyte']] - dCk_elyte_dt
-       
         return resid
         
     def voltage_lim(self, SV, val):
@@ -350,13 +381,8 @@ class electrode():
 
         # Find the minimum species concentration, and # compare to the user-provided minimum.  Save only the minimum value:
         Ck_elyte = SV_loc[SVptr['C_k_elyte'][0]]
-            
         local_eval = min(Ck_elyte) - val
         species_eval = min(species_eval, local_eval)
-
-        if np.isnan(np.sum(Ck_elyte)):
-            species_eval = -1
-            print("nan found")
 
         # The simulation  looks for instances where this value changes sign 
         # (i.e. where it equals zero)    
@@ -375,7 +401,7 @@ class electrode():
         """Plot the intercalation fraction vs. time"""
         for j in np.arange(self.n_r):
             C_k_ed = \
-                solution[SV_offset+self.SV_offset + self.SVptr['C_k_ed'][j,:],:]
+                solution[SV_offset+self.SV_offset + self.SVptr['C_k_ed'][0][j,:],:]
             X_k_ed = C_k_ed[self.index_Li_ed]/np.sum(C_k_ed,axis=0)
             axs[ax_offset].plot(solution[0,:]/3600, X_k_ed)
 
